@@ -1,0 +1,12 @@
+# Real financial data and secrets must never be committed (this repo is public)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+.env
+.env.*
+*.tok
+__pycache__/
+*.pyc
+.omc/
