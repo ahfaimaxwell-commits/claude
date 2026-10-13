@@ -187,3 +187,32 @@ class TestApprovalsAndRBAC(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAmendPaths(Base):
+    def test_setting_change_needs_a_second_admin_and_is_validated(self):
+        with self.assertRaisesRegex(ControlViolation, "cannot be changed"):
+            core.validate_setting("base_currency", "USD")
+        with self.assertRaises(ControlViolation):
+            core.validate_setting("ar_collection_rate", "1.5")
+        with self.assertRaises(ControlViolation):
+            core.validate_setting("approval_threshold_minor", "-5")
+        a = core.request_approval(self.c, ADMIN, "settings_change", {"key": "approval_threshold_minor", "value": "250000"})
+        with self.assertRaises(ControlViolation):  # same person
+            core.decide_approval(self.c, ADMIN, a, True)
+        with self.assertRaises(ControlViolation):  # approver but not admin
+            core.decide_approval(self.c, APPROVER, a, True)
+        self.assertEqual(self.one("SELECT value FROM settings WHERE key='approval_threshold_minor'")[0], "100000")  # unchanged so far
+        core.create_user(self.c, "admin2", "finance_admin")
+        res = core.decide_approval(self.c, core.User(9, "admin2", "finance_admin"), a, True)
+        self.assertEqual(res["result"], {"key": "approval_threshold_minor", "old": "100000", "new": "250000"})
+        self.assertEqual(self.one("SELECT value FROM settings WHERE key='approval_threshold_minor'")[0], "250000")
+        self.assertTrue(self.one("SELECT 1 FROM audit_log WHERE action='settings.change'"))
+        self.assertEqual(core.verify_audit_chain(self.c), (True, None))
+
+    def test_unvalidated_setting_cannot_be_smuggled_through_an_approval(self):
+        a = core.request_approval(self.c, ADMIN, "settings_change", {"key": "base_currency", "value": "USD"})
+        core.create_user(self.c, "admin2", "finance_admin")
+        with self.assertRaises(ControlViolation):
+            core.decide_approval(self.c, core.User(9, "admin2", "finance_admin"), a, True)
+        self.assertEqual(self.one("SELECT value FROM settings WHERE key='base_currency'")[0], "SGD")

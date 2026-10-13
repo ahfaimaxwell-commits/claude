@@ -59,6 +59,21 @@ Connector `status` becomes `verified` only after a real import succeeds.
 - Synthetic demo: `seed-synthetic` refuses to touch the default database.
 - Cost: £0/US$0: no services, no dependencies. Optional later costs: hosting, a bank feed, an accounting system.
 
+## 5b. Is it automatic? Where to amend
+**Automation today:** nothing runs on a schedule. Imports are started by a person (dashboard upload or API). Once started, the whole import workflow runs by itself and stops at human approvals. Cash, forecasts, budgets and KPIs recalculate when a page loads. The Stripe webhook receiver exists but is not hosted/registered. Next steps if wanted: host behind HTTPS + daily backup; nightly Stripe import with a read-only restricted key; statement drop folder; scheduled monthly report draft.
+
+**Amending (all audit-logged):**
+| Change | Where | Control |
+|---|---|---|
+| Policy settings (thresholds, collection assumptions, SoD switch, `coa_approved_by_accountant`) | Accounting → Policy settings, or `POST /api/settings` | finance_admin requests, a *second* finance_admin approves; whitelist + range validation (`core.SETTING_RULES`) |
+| Categorisation rules | Accounting → Categorisation rules, `POST /api/rules` | approver+; proposals only |
+| Chart of accounts | Accounting → Add account, `POST /api/coa` | finance_admin; accounts are deactivated, never edited or deleted |
+| Company facts (year-end, GST status) | Tax & Compliance → Set, `POST /api/facts` | approver+; source document required |
+| Verified balances | Overview → Record balance, `POST /api/snapshots` | counts as verified only if recorded by an approver |
+| Budgets | Budgets → Set / change a budget line, `POST /api/budgets` | preparer+ |
+| Users / roles | `POST /api/users` (no button yet) | second finance_admin approves |
+| Logic, importers, tax rules, connectors | code in `kffinance/` | developer + re-run tests; accountant reviews tax rules |
+
 ## 6. Known limitations / open items
 - **Not a substitute** for a qualified accountant or tax adviser. The default chart of accounts is a *draft* (`coa_approved_by_accountant=0`) and is flagged as such.
 - Tax calendar rules are the system's understanding of IRAS/ACRA requirements and are labelled "confirm with your accountant"; GST return dates need the IRAS-assigned stagger and are intentionally not computed.
@@ -72,4 +87,4 @@ Connector `status` becomes `verified` only after a real import succeeds.
 - Live Stripe/bank data has not been imported. Everything above was verified on synthetic or sample data.
 
 ## 7. Verification
-`cd tests && python3 -m unittest discover -p "test_*.py"` (88 tests: money, journal controls, audit tamper detection, SoD, RBAC over HTTP, duplicate-import prevention, webhook signatures, reconciliation gating, forecasts, tax, FP&A, reporting, backup/restore, CLI guards). The dashboard was also rendered in headless Chromium: all 13 views loaded with no JS errors and no mobile overflow.
+`cd tests && python3 -m unittest discover -p "test_*.py"` (91 tests: money, journal controls, audit tamper detection, SoD, RBAC over HTTP, duplicate-import prevention, webhook signatures, reconciliation gating, forecasts, tax, FP&A, reporting, backup/restore, CLI guards). The dashboard was also rendered in headless Chromium: all 13 views loaded with no JS errors and no mobile overflow.

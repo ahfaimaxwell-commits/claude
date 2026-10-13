@@ -100,7 +100,8 @@ def g_accounting(c, u, q):
     return {"coa": rows(c, "SELECT * FROM coa ORDER BY code"), "coa_approved_by_accountant": setting(c, "coa_approved_by_accountant") == "1",
             "entries": [{**r, "total": obj(r["total"], r["currency"])} for r in rows(c, """SELECT e.*, (SELECT SUM(debit_minor) FROM journal_lines WHERE entry_id=e.id) total FROM journal_entries e ORDER BY e.id DESC LIMIT 200""")],
             "periods": rows(c, "SELECT * FROM periods ORDER BY id DESC"), "reconciliations": rows(c, "SELECT * FROM reconciliations ORDER BY id DESC LIMIT 50"),
-            "trial_balance": trial_balance(c), "accounts": rows(c, "SELECT * FROM accounts")}
+            "trial_balance": trial_balance(c), "accounts": rows(c, "SELECT * FROM accounts"),
+            "settings": rows(c, "SELECT key,value,updated_at FROM settings ORDER BY key"), "category_rules": rows(c, "SELECT * FROM category_rules ORDER BY id")}
 
 
 def g_journal(c, u, q):
@@ -306,6 +307,57 @@ def p_tax_build(c, u, b, a):
     return tax.build_calendar(c, u, b.get("as_of", date.today().isoformat()))
 
 
+def p_setting(c, u, b, a):
+    u.require("settings")
+    from .core import validate_setting
+    value = validate_setting(b["key"], b["value"])  # fail early; applied only after a second admin approves
+    return {"approval_id": request_approval(c, u, "settings_change", {"key": b["key"], "value": value})}
+
+
+def p_rule(c, u, b, a):
+    u.require("approve")
+    conf = float(b.get("confidence", 0.9))
+    if not (0 < conf <= 1) or not b["pattern"].strip():
+        raise ControlViolation("rule needs a pattern and a confidence between 0 and 1")
+    if not c.execute("SELECT 1 FROM coa WHERE code=? AND active=1", (b["coa_code"],)).fetchone():
+        raise ControlViolation("coa_code is not an active account")
+    with tx(c):
+        cur = c.execute("INSERT INTO category_rules (pattern,coa_code,kind,confidence) VALUES (?,?,?,?)", (b["pattern"].strip().lower(), b["coa_code"], b.get("kind", "expense"), conf))
+        audit(c, u.name, "rule.add", "category_rule", cur.lastrowid, None, {"pattern": b["pattern"], "coa": b["coa_code"], "confidence": conf})
+    return {"rule_id": cur.lastrowid}
+
+
+def p_rule_off(c, u, b, a):
+    u.require("approve")
+    with tx(c):
+        c.execute("UPDATE category_rules SET active=0 WHERE id=?", (int(a[0]),))
+        audit(c, u.name, "rule.deactivate", "category_rule", a[0])
+    return {"ok": True}
+
+
+def p_coa(c, u, b, a):
+    u.require("manage_users")
+    if b["type"] not in ("asset", "liability", "equity", "revenue", "expense") or not re.match(r"^\d{4}$", b["code"]):
+        raise ControlViolation("code must be 4 digits and type one of asset/liability/equity/revenue/expense")
+    with tx(c):
+        try:
+            c.execute("INSERT INTO coa (code,name,type) VALUES (?,?,?)", (b["code"], b["name"], b["type"]))
+        except Exception:
+            raise ControlViolation("account code already exists (accounts are never edited in place; deactivate and add a new one)") from None
+        audit(c, u.name, "coa.add", "coa", b["code"], None, {"name": b["name"], "type": b["type"]})
+    return {"ok": True}
+
+
+def p_coa_off(c, u, b, a):
+    u.require("manage_users")
+    if c.execute("SELECT 1 FROM journal_lines l JOIN journal_entries e ON e.id=l.entry_id WHERE l.account_code=? AND e.status='draft' LIMIT 1", (a[0],)).fetchone():
+        raise ControlViolation("account is used by draft journals")
+    with tx(c):
+        c.execute("UPDATE coa SET active=0 WHERE code=?", (a[0],))
+        audit(c, u.name, "coa.deactivate", "coa", a[0])
+    return {"ok": True}
+
+
 def p_metric(c, u, b, a):
     u.require("approve")
     with tx(c):
@@ -322,7 +374,8 @@ POST = [
     (r"^/api/budgets$", p_budget), (r"^/api/invoices$", p_invoice), (r"^/api/payments/authorise$", p_pay_auth), (r"^/api/purchase-requests$", p_purchase),
     (r"^/api/snapshots$", p_snapshot), (r"^/api/accounts$", p_account), (r"^/api/users$", p_user), (r"^/api/facts$", p_fact), (r"^/api/planned-items$", p_planned),
     (r"^/api/reports/monthly$", p_report), (r"^/api/reports/approve$", p_report_approve), (r"^/api/export-requests$", p_export_request), (r"^/api/tax/build$", p_tax_build),
-    (r"^/api/metrics$", p_metric),
+    (r"^/api/metrics$", p_metric), (r"^/api/settings$", p_setting), (r"^/api/rules$", p_rule), (r"^/api/rules/(\d+)/deactivate$", p_rule_off),
+    (r"^/api/coa$", p_coa), (r"^/api/coa/(\d{4})/deactivate$", p_coa_off),
 ]
 
 

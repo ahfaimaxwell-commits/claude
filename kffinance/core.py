@@ -110,7 +110,7 @@ def authenticate(conn, token: str | None) -> User | None:
 
 # --------------------------------------------------------------------------- approvals
 
-NEVER_AUTOMATED = {"payment", "tax_submission", "export_external", "permission_change", "vendor_change", "expenditure"}
+NEVER_AUTOMATED = {"payment", "tax_submission", "export_external", "permission_change", "settings_change", "vendor_change", "expenditure"}
 
 
 def request_approval(conn, user: User, type_: str, payload: dict, amount_minor=None, currency=None, idem=None) -> int:
@@ -140,7 +140,7 @@ def decide_approval(conn, user: User, approval_id: int, approve: bool, note: str
         payload = json.loads(a["payload_json"])
         if approve and a["type"] == "tax_submission" and not payload.get("professional_review_completed"):
             raise ControlViolation("tax submissions require recorded professional review before approval")
-        if approve and a["type"] == "permission_change" and user.role != "finance_admin":
+        if approve and a["type"] in ("permission_change", "settings_change") and user.role != "finance_admin":
             raise ControlViolation("permission changes need a finance_admin")
         result = {}
         status = "approved" if approve else "rejected"
@@ -168,6 +168,43 @@ def _effect_permission_change(conn, user, p):
         conn.execute("UPDATE users SET active=0 WHERE name=?", (p["name"],))
         return {"user": p["name"], "active": False}
     raise ControlViolation("unknown permission action")
+
+
+def _num(v, lo=None, hi=None, integer=False):
+    try:
+        x = int(v) if integer else float(v)
+    except (TypeError, ValueError):
+        raise ControlViolation(f"{v!r} is not a valid {'integer' if integer else 'number'}") from None
+    if (lo is not None and x < lo) or (hi is not None and x > hi):
+        raise ControlViolation(f"{v!r} is outside the allowed range {lo}..{hi}")
+    return str(x)
+
+
+SETTING_RULES = {  # the only settings that may be changed, and how each is validated
+    "approval_threshold_minor": lambda v: _num(v, 0, integer=True),
+    "material_adjustment_minor": lambda v: _num(v, 0, integer=True),
+    "missing_receipt_threshold_minor": lambda v: _num(v, 0, integer=True),
+    "unusual_spend_multiplier": lambda v: _num(v, 1.1, 100),
+    "ar_collection_rate": lambda v: _num(v, 0, 1),
+    "ar_collection_delay_days": lambda v: _num(v, 0, 180, integer=True),
+    "auto_approve_classification": lambda v: _num(v, 0, 1, integer=True),
+    "enforce_separation_of_duties": lambda v: _num(v, 0, 1, integer=True),
+    "coa_approved_by_accountant": lambda v: _num(v, 0, 1, integer=True),
+}
+
+
+def validate_setting(key, value) -> str:
+    if key not in SETTING_RULES:
+        raise ControlViolation(f"setting {key!r} cannot be changed here (allowed: {sorted(SETTING_RULES)})")
+    return SETTING_RULES[key](value)
+
+
+def _effect_settings_change(conn, user, p):
+    value = validate_setting(p["key"], p["value"])
+    old = conn.execute("SELECT value FROM settings WHERE key=?", (p["key"],)).fetchone()
+    conn.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?", (value, now(), p["key"]))
+    audit(conn, user.name, "settings.change", "setting", p["key"], {"value": old[0] if old else None}, {"value": value})
+    return {"key": p["key"], "old": old[0] if old else None, "new": value}
 
 
 def _effect_period_close(conn, user, p):
@@ -203,7 +240,7 @@ def _reject_invoice(conn, user, p):
 
 _EFFECTS = {"permission_change": _effect_permission_change, "period_close": _effect_period_close,
             "invoice": _effect_invoice, "vendor_change": _effect_vendor_change,
-            "classification_review": _effect_classification_review}
+            "classification_review": _effect_classification_review, "settings_change": _effect_settings_change}
 _REJECT_EFFECTS = {"invoice": _reject_invoice}
 
 

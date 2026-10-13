@@ -54,7 +54,8 @@ const VIEWS = {
       section("Transactions", h("div", { class: "grid" }, stat("Total", String(t.total)), stat("Uncategorised", String(t.uncategorised)), stat("Proposed (awaiting review)", String(t.proposed)),
         stat("Approved", String(t.approved)), stat("Unreconciled", String(t.unreconciled)), stat("Pending settlement", String(t.pending_settlement)))),
       section("Accounts", table([{ t: "Account", f: (a) => a.name }, { t: "Class", f: (a) => a.funds_class }, { t: "Verified balance", num: 1, f: (a) => money(a.balance) }, { t: "As of", f: (a) => a.as_of || "-" },
-        { t: "Unsettled", num: 1, f: (a) => money(a.unsettled) }], o.cash.accounts))];
+        { t: "Unsettled", num: 1, f: (a) => money(a.unsettled) },
+        { t: "", f: (a) => h("button", { class: "small ghost", onclick: () => recordBalance(a) }, "Record balance") }], o.cash.accounts))];
   },
   async "Transactions"() {
     const q = new URLSearchParams(window.location.hash.slice(1));
@@ -109,7 +110,7 @@ const VIEWS = {
   },
   async "Budgets"() {
     const b = await api("/api/budgets");
-    return [h("h1", {}, "Budgets " + b.period), h("p", { class: "muted" }, b.note),
+    return [h("h1", {}, "Budgets " + b.period), h("p", { class: "muted" }, b.note), h("div", { class: "row" }, h("button", { class: "small", onclick: () => setBudget(b.period) }, "Set / change a budget line")),
       table([{ t: "Dept", f: (r) => r.department }, { t: "Category", f: (r) => r.category }, { t: "Budget", num: 1, f: (r) => money(r.budget) }, { t: "Actual (approved)", num: 1, f: (r) => money(r.actual_approved) },
         { t: "Unreviewed", num: 1, f: (r) => money(r.unreviewed_proposed) }, { t: "Variance", num: 1, f: (r) => money(r.variance) }, { t: "Var %", num: 1, f: (r) => r.variance_pct == null ? "-" : r.variance_pct + "%" },
         { t: "Alert", f: (r) => r.over_spend_limit ? pill("over limit", "bad") : r.over_budget ? pill("over budget", "warn") : "" }], b.rows)];
@@ -123,14 +124,21 @@ const VIEWS = {
       section("Reconciliation reports", table([{ t: "Account", f: (r) => r.account_id }, { t: "Period", f: (r) => r.period }, { t: "Status", f: (r) => statusPill(r.status) }, { t: "Difference", num: 1, f: (r) => r.difference_minor == null ? h("span", { class: "unav" }, "Unavailable") : fmt(r.difference_minor) },
         { t: "Reasons", wrap: 1, f: (r) => JSON.parse(r.reasons_json).join("; ") || "none" }], a.reconciliations)),
       section("Trial balance (posted)", table([{ t: "Code", f: (r) => r.code }, { t: "Account", f: (r) => r.name }, { t: "Ccy", f: (r) => r.currency }, { t: "Debit", num: 1, f: (r) => fmt(r.dr) }, { t: "Credit", num: 1, f: (r) => fmt(r.cr) }], a.trial_balance)),
-      section("Chart of accounts", table([{ t: "Code", f: (r) => r.code }, { t: "Name", f: (r) => r.name }, { t: "Type", f: (r) => r.type }], a.coa))];
+      section("Policy settings (changes need a second finance_admin to approve)", table([{ t: "Setting", f: (x) => x.key }, { t: "Value", f: (x) => x.value }, { t: "Updated", f: (x) => x.updated_at },
+        { t: "", f: (x) => h("button", { class: "small ghost", onclick: () => { const v = prompt(`New value for ${x.key} (currently ${x.value}). Amounts are in cents.`); if (v !== null && v !== "") act(() => api("/api/settings", { key: x.key, value: v }), "Change requested - awaiting approval"); } }, "Request change") }], a.settings.filter((x) => x.key !== "base_currency" && x.key !== "dataset_label"))),
+      section("Categorisation rules (text match to account)", h("div", { class: "row" }, h("button", { class: "small", onclick: () => { const pattern = prompt("Text to look for in the description or counterparty (e.g. 'notion')"); if (!pattern) return; const coa_code = prompt("Account code (see chart below)"); if (!coa_code) return; act(() => api("/api/rules", { pattern, coa_code, kind: "expense", confidence: 0.9 }), "Rule added"); } }, "Add rule")),
+        table([{ t: "ID", f: (r) => r.id }, { t: "Text", f: (r) => r.pattern }, { t: "Account", f: (r) => r.coa_code }, { t: "Confidence", f: (r) => r.confidence }, { t: "Active", f: (r) => r.active ? "yes" : "no" },
+          { t: "", f: (r) => r.active ? h("button", { class: "small ghost", onclick: () => act(() => api(`/api/rules/${r.id}/deactivate`, {}), "Rule deactivated") }, "Turn off") : "" }], a.category_rules)),
+      section("Chart of accounts", h("div", { class: "row" }, h("button", { class: "small", onclick: () => { const code = prompt("New 4-digit account code"); if (!code) return; const name = prompt("Account name"); if (!name) return; const type = prompt("Type: asset, liability, equity, revenue or expense"); if (type) act(() => api("/api/coa", { code, name, type }), "Account added"); } }, "Add account")),
+        table([{ t: "Code", f: (r) => r.code }, { t: "Name", f: (r) => r.name }, { t: "Type", f: (r) => r.type }, { t: "Active", f: (r) => r.active ? "yes" : "no" }], a.coa))];
   },
   async "Tax & Compliance"() {
     const t = await api("/api/tax");
     const g = t.gst_threshold;
     return [h("h1", {}, "Tax & compliance (Singapore)"), h("p", { class: "pill warn" }, t.disclaimer),
       h("div", { class: "row" }, h("button", { onclick: () => act(() => api("/api/tax/build", {}), "Calendar refreshed") }, "Rebuild calendar from verified facts")),
-      section("Company facts (nothing is assumed)", table([{ t: "Fact", f: (f) => f.key }, { t: "Value", f: (f) => f.value == null ? h("span", { class: "unav" }, "Unknown") : f.value }, { t: "Verified", f: (f) => f.verified ? pill("verified", "ok") : pill("unverified", "warn") }, { t: "Source", f: (f) => f.source || "-" }], t.facts)),
+      section("Company facts (nothing is assumed)", table([{ t: "Fact", f: (f) => f.key }, { t: "Value", f: (f) => f.value == null ? h("span", { class: "unav" }, "Unknown") : f.value }, { t: "Verified", f: (f) => f.verified ? pill("verified", "ok") : pill("unverified", "warn") }, { t: "Source", f: (f) => f.source || "-" },
+        { t: "", f: (f) => h("button", { class: "small ghost", onclick: () => setFact(f) }, "Set") }], t.facts)),
       section("Open questions", table([{ t: "Topic", f: (q) => q.topic }, { t: "Question", wrap: 1, f: (q) => q.question }], t.open_questions)),
       section("Filing calendar (potentially applicable)", table([{ t: "Due", f: (i) => i.due_date || "-" }, { t: "Obligation", wrap: 1, f: (i) => i.title }, { t: "Basis", wrap: 1, f: (i) => i.basis }, { t: "Status", f: (i) => i.status }, { t: "Professional review", f: (i) => pill(i.professional_review, i.professional_review === "required" ? "warn" : "ok") }], t.calendar)),
       section("GST threshold monitor (estimate)", h("p", {}, "Trailing 12m invoiced: ", money(g.trailing_12m_invoiced), " of ", money(g.threshold), ` (${g.pct_of_threshold}%). Registration status: ${g.registration_status}${g.verified ? " (verified)" : " (unverified)"}.`), h("p", { class: "muted" }, g.caveat)),
@@ -187,6 +195,26 @@ const VIEWS = {
 
 const fmt = (minor) => (minor < 0 ? "-" : "") + Math.abs(minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+function recordBalance(a) {
+  const as_of = prompt(`Statement date for ${a.name} (YYYY-MM-DD)`); if (!as_of) return;
+  const amount = prompt(`Closing balance in ${a.currency}, e.g. 12345.67`); if (!amount) return;
+  const source = prompt("Source (e.g. 'DBS statement Sep 2026')"); if (!source) return;
+  const evidence_ref = prompt("Evidence reference (file name or link to the statement)"); if (!evidence_ref) return;
+  act(() => api("/api/snapshots", { account_id: a.account_id, as_of, amount, currency: a.currency, source, evidence_ref }).then((r) => { toast(r.verified ? "Recorded and verified" : "Recorded, NOT verified until an approver records it"); return r; }), "Balance recorded");
+}
+function setFact(f) {
+  const hint = f.key === "fiscal_year_end" ? "MM-DD, e.g. 12-31" : f.key === "gst_registered" ? "true or false" : "value";
+  const value = prompt(`${f.key} (${hint})`, f.value || ""); if (!value) return;
+  const source = prompt("Source document (e.g. 'ACRA BizFile 12 Oct 2026')"); if (!source) return;
+  act(() => api("/api/facts", { key: f.key, value, verified: true, source }), "Fact recorded");
+}
+function setBudget(period) {
+  const department = prompt("Department", "general"); if (!department) return;
+  const category = prompt("Account code (e.g. 6100)"); if (!category) return;
+  const amount = prompt("Monthly budget in SGD, e.g. 1500.00"); if (!amount) return;
+  const limit = prompt("Hard spend limit in SGD (optional)") || undefined;
+  act(() => api("/api/budgets", { period, department, category, amount, limit, currency: "SGD" }), "Budget saved");
+}
 function classify(r) {
   const cat = prompt(`Category code for #${r.record_id} (${r.description}). Current: ${r.category || "none"}`, r.category || "");
   if (cat) act(() => api(`/api/transactions/${r.record_id}/classify`, { category: cat }), "Classified");

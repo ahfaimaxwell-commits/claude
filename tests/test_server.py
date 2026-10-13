@@ -236,3 +236,23 @@ class TestBackupAndCLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAmendHTTP(ServerCase):
+    def test_rules_coa_and_settings_over_http(self):
+        self.assertEqual(self.call("POST", "/api/rules", "preparer", {"pattern": "notion", "coa_code": "6100"})[0], 403)
+        s, r, _ = self.call("POST", "/api/rules", "approver", {"pattern": " Notion ", "coa_code": "6100", "confidence": 0.9})
+        self.assertEqual(s, 200, r)
+        self.assertEqual(self.call("POST", "/api/rules", "approver", {"pattern": "x", "coa_code": "9999"})[0], 409)
+        s, acc, _ = self.call("GET", "/api/accounting", "viewer")
+        self.assertIn("notion", [x["pattern"] for x in acc["category_rules"]])
+        self.assertEqual(self.call("POST", "/api/coa", "approver", {"code": "6950", "name": "Test", "type": "expense"})[0], 403)
+        self.assertEqual(self.call("POST", "/api/coa", "admin", {"code": "6950", "name": "Test", "type": "expense"})[0], 200)
+        self.assertEqual(self.call("POST", "/api/coa", "admin", {"code": "6950", "name": "Dup", "type": "expense"})[0], 409)
+        self.assertEqual(self.call("POST", "/api/coa", "admin", {"code": "69", "name": "Bad", "type": "expense"})[0], 409)
+        self.assertEqual(self.call("POST", "/api/settings", "approver", {"key": "approval_threshold_minor", "value": "1"})[0], 403)
+        self.assertEqual(self.call("POST", "/api/settings", "admin", {"key": "base_currency", "value": "USD"})[0], 409)
+        s, r, _ = self.call("POST", "/api/settings", "admin", {"key": "ar_collection_delay_days", "value": "14"})
+        self.assertEqual(s, 200, r)
+        s, r2, _ = self.call("POST", f"/api/approvals/{r['approval_id']}/decide", "admin2", {"approve": True})
+        self.assertEqual((s, r2["result"]["new"]), (200, "14"))
